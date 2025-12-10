@@ -129,6 +129,14 @@
                 fetch(`https://api.spotify.com/v1/me/player/recently-played?limit=50`, { headers: h })
               ]);
 
+              if (!topTracksRes.ok || !topArtistsRes.ok) {
+                console.error('Auth error - token expired');
+                setIsAuthenticated(false);
+                setAccessToken('');
+                alert('Session expired. Please reconnect with Spotify.');
+                return;
+              }
+
               const [topTracks, topArtists, recentTracks] = await Promise.all([
                 topTracksRes.json(),
                 topArtistsRes.json(),
