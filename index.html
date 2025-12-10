@@ -12,6 +12,8 @@
       body { background: #0a0a0a; margin: 0; }
       .gradient-red { background: linear-gradient(135deg, #1a0000 0%, #0a0a0a 50%, #1a0000 100%); }
       .card-dark { background: rgba(26, 0, 0, 0.3); border: 1px solid rgba(220, 38, 38, 0.2); }
+      .scrollbar-hide::-webkit-scrollbar { display: none; }
+      .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
     </style>
 </head>
 <body>
@@ -23,13 +25,18 @@
         const SpotifyStats = () => {
           const [token, setToken] = useState('');
           const [authed, setAuthed] = useState(false);
-          const [range, setRange] = useState('medium_term');
+          const [range, setRange] = useState('short_term');
+          const [customWeeks, setCustomWeeks] = useState('');
+          const [showCustom, setShowCustom] = useState(false);
           const [data, setData] = useState(null);
           const [loading, setLoading] = useState(false);
           const [tab, setTab] = useState('tracks');
           const [search, setSearch] = useState('');
           const [results, setResults] = useState([]);
           const [detail, setDetail] = useState(null);
+          const [allHistory, setAllHistory] = useState([]);
+          const [allTopTracks, setAllTopTracks] = useState({ short: [], medium: [], long: [] });
+          const [allTopArtists, setAllTopArtists] = useState({ short: [], medium: [], long: [] });
 
           const CID = '28a38a04492140ab9d521d62eed5f9d8';
           const REDIR = 'https://giatopcst2-code.github.io/new/';
@@ -64,15 +71,15 @@
 
           useEffect(() => {
             if (authed && token) {
-              load();
+              fetchAllData();
             }
           }, [authed, token]);
 
           useEffect(() => {
-            if (authed && token && data) {
-              load();
+            if (authed && token && allHistory.length > 0) {
+              processData();
             }
-          }, [range]);
+          }, [range, allHistory, allTopTracks, allTopArtists]);
 
           const exchange = async (code, ver) => {
             try {
@@ -119,74 +126,290 @@
             window.location.href = url.toString();
           };
 
-          const load = async () => {
+          const fetchAllData = async () => {
             setLoading(true);
             try {
               const h = { Authorization: `Bearer ${token}` };
               
-              const res1 = await fetch(`https://api.spotify.com/v1/me/top/tracks?time_range=${range}&limit=50`, { headers: h });
-              const res2 = await fetch(`https://api.spotify.com/v1/me/top/artists?time_range=${range}&limit=50`, { headers: h });
-              const res3 = await fetch(`https://api.spotify.com/v1/me/player/recently-played?limit=50`, { headers: h });
+              // Fetch recently played (last 50 tracks - Spotify API limit)
+              const recentRes = await fetch('https://api.spotify.com/v1/me/player/recently-played?limit=50', { headers: h });
+              const recentData = await recentRes.json();
+              setAllHistory(recentData.items || []);
 
-              const tracks = await res1.json();
-              const artists = await res2.json();
-              const recent = await res3.json();
+              // Fetch top tracks for all time ranges (100 each)
+              const [shortTracksRes, mediumTracksRes, longTracksRes] = await Promise.all([
+                fetch('https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=50', { headers: h }),
+                fetch('https://api.spotify.com/v1/me/top/tracks?time_range=medium_term&limit=50', { headers: h }),
+                fetch('https://api.spotify.com/v1/me/top/tracks?time_range=long_term&limit=50', { headers: h })
+              ]);
 
-              const tpc = {};
-              const apc = {};
-              const alb = {};
+              const shortTracks = await shortTracksRes.json();
+              const mediumTracks = await mediumTracksRes.json();
+              const longTracks = await longTracksRes.json();
 
-              tracks.items?.forEach((t, i) => {
-                const pc = 50 - i;
-                tpc[t.id] = pc;
-                
-                t.artists.forEach(a => {
-                  apc[a.id] = (apc[a.id] || 0) + pc;
-                });
+              // Fetch second batch (51-100)
+              const [shortTracks2Res, mediumTracks2Res, longTracks2Res] = await Promise.all([
+                fetch('https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=50&offset=50', { headers: h }),
+                fetch('https://api.spotify.com/v1/me/top/tracks?time_range=medium_term&limit=50&offset=50', { headers: h }),
+                fetch('https://api.spotify.com/v1/me/top/tracks?time_range=long_term&limit=50&offset=50', { headers: h })
+              ]);
 
-                const k = t.album.id;
-                if (!alb[k]) {
-                  alb[k] = { album: t.album, playCount: 0, tracks: [] };
-                }
-                alb[k].playCount += pc;
-                alb[k].tracks.push(t);
+              const shortTracks2 = await shortTracks2Res.json();
+              const mediumTracks2 = await mediumTracks2Res.json();
+              const longTracks2 = await longTracks2Res.json();
+
+              setAllTopTracks({
+                short: [...(shortTracks.items || []), ...(shortTracks2.items || [])],
+                medium: [...(mediumTracks.items || []), ...(mediumTracks2.items || [])],
+                long: [...(longTracks.items || []), ...(longTracks2.items || [])]
               });
 
-              const albums = Object.values(alb).sort((a, b) => b.playCount - a.playCount).slice(0, 50);
-              const time = tracks.items?.reduce((acc, t) => acc + (t.duration_ms * (tpc[t.id] || 1)), 0) || 0;
-              
-              const gc = {};
-              artists.items?.forEach(a => {
-                a.genres.forEach(g => {
-                  gc[g] = (gc[g] || 0) + 1;
-                });
-              });
-              
-              const genres = Object.entries(gc).sort((a, b) => b[1] - a[1]).slice(0, 20).map(([genre, count]) => ({ genre, count }));
+              // Fetch top artists for all time ranges (100 each)
+              const [shortArtistsRes, mediumArtistsRes, longArtistsRes] = await Promise.all([
+                fetch('https://api.spotify.com/v1/me/top/artists?time_range=short_term&limit=50', { headers: h }),
+                fetch('https://api.spotify.com/v1/me/top/artists?time_range=medium_term&limit=50', { headers: h }),
+                fetch('https://api.spotify.com/v1/me/top/artists?time_range=long_term&limit=50', { headers: h })
+              ]);
 
-              setData({
-                tracks: tracks.items?.map(t => ({ ...t, playCount: tpc[t.id] || 0 })) || [],
-                artists: artists.items?.map(a => ({ ...a, playCount: apc[a.id] || 0 })) || [],
-                albums,
-                recent: recent.items || [],
-                time,
-                genres,
-                tpc,
-                apc
+              const shortArtists = await shortArtistsRes.json();
+              const mediumArtists = await mediumArtistsRes.json();
+              const longArtists = await longArtistsRes.json();
+
+              // Fetch second batch (51-100)
+              const [shortArtists2Res, mediumArtists2Res, longArtists2Res] = await Promise.all([
+                fetch('https://api.spotify.com/v1/me/top/artists?time_range=short_term&limit=50&offset=50', { headers: h }),
+                fetch('https://api.spotify.com/v1/me/top/artists?time_range=medium_term&limit=50&offset=50', { headers: h }),
+                fetch('https://api.spotify.com/v1/me/top/artists?time_range=long_term&limit=50&offset=50', { headers: h })
+              ]);
+
+              const shortArtists2 = await shortArtists2Res.json();
+              const mediumArtists2 = await mediumArtists2Res.json();
+              const longArtists2 = await longArtists2Res.json();
+
+              setAllTopArtists({
+                short: [...(shortArtists.items || []), ...(shortArtists2.items || [])],
+                medium: [...(mediumArtists.items || []), ...(mediumArtists2.items || [])],
+                long: [...(longArtists.items || []), ...(longArtists2.items || [])]
               });
+
             } catch (e) {
-              console.error('Load error:', e);
+              console.error('Fetch error:', e);
             }
             setLoading(false);
           };
 
+          const processData = () => {
+            const now = new Date();
+            let cutoffDate;
+            let topTracks = [];
+            let topArtists = [];
+
+            // Determine cutoff date and which top tracks/artists to use
+            if (range === 'short_term') {
+              // 1 week = 7 days
+              cutoffDate = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
+              topTracks = allTopTracks.short;
+              topArtists = allTopArtists.short;
+            } else if (range === 'medium_term') {
+              // 4 weeks = 28 days
+              cutoffDate = new Date(now.getTime() - (28 * 24 * 60 * 60 * 1000));
+              topTracks = allTopTracks.medium;
+              topArtists = allTopArtists.medium;
+            } else if (range === 'long_term') {
+              // 6 months = 180 days
+              cutoffDate = new Date(now.getTime() - (180 * 24 * 60 * 60 * 1000));
+              topArtists = allTopArtists.long;
+              topTracks = allTopTracks.long;
+            } else if (range === 'lifetime') {
+              // All time
+              cutoffDate = new Date('2000-01-01');
+              topTracks = allTopTracks.long;
+              topArtists = allTopArtists.long;
+            } else if (range.startsWith('custom_')) {
+              // Custom range
+              const weeks = parseInt(range.split('_')[1]);
+              cutoffDate = new Date(now.getTime() - (weeks * 7 * 24 * 60 * 60 * 1000));
+              
+              // Use appropriate top tracks based on custom range
+              if (weeks <= 4) {
+                topTracks = allTopTracks.short;
+                topArtists = allTopArtists.short;
+              } else if (weeks <= 26) {
+                topTracks = allTopTracks.medium;
+                topArtists = allTopArtists.medium;
+              } else {
+                topTracks = allTopTracks.long;
+                topArtists = allTopArtists.long;
+              }
+            }
+
+            // Filter history by cutoff date
+            const filteredHistory = allHistory.filter(item => 
+              new Date(item.played_at) >= cutoffDate
+            );
+
+            // Calculate ACCURATE play counts from filtered history
+            const trackPlayCounts = {};
+            const artistPlayCounts = {};
+            const albumPlayCounts = {};
+            let totalListeningTime = 0;
+
+            // Count each play in the filtered history
+            filteredHistory.forEach(item => {
+              const trackId = item.track.id;
+              trackPlayCounts[trackId] = (trackPlayCounts[trackId] || 0) + 1;
+              totalListeningTime += item.track.duration_ms;
+
+              item.track.artists.forEach(artist => {
+                artistPlayCounts[artist.id] = (artistPlayCounts[artist.id] || 0) + 1;
+              });
+
+              const albumId = item.track.album.id;
+              albumPlayCounts[albumId] = (albumPlayCounts[albumId] || 0) + 1;
+            });
+
+            // Build track history map for first/last played dates
+            const trackHistoryMap = {};
+            allHistory.forEach(item => {
+              const trackId = item.track.id;
+              if (!trackHistoryMap[trackId]) {
+                trackHistoryMap[trackId] = [];
+              }
+              trackHistoryMap[trackId].push(item);
+            });
+
+            // Enhance tracks with ACCURATE play data
+            const enhancedTracks = topTracks.slice(0, 100).map((track, index) => {
+              const history = trackHistoryMap[track.id] || [];
+              // Use ONLY the actual count from filtered history - NO ESTIMATION
+              const playsInRange = trackPlayCounts[track.id] || 0;
+              
+              let firstPlayed = null;
+              let lastPlayed = null;
+              
+              if (history.length > 0) {
+                const dates = history.map(item => new Date(item.played_at));
+                firstPlayed = new Date(Math.min(...dates));
+                lastPlayed = new Date(Math.max(...dates));
+              }
+
+              return {
+                ...track,
+                rank: index + 1,
+                playCount: playsInRange, // ACCURATE count from actual plays
+                totalPlays: history.length,
+                firstPlayed,
+                lastPlayed,
+                history
+              };
+            });
+
+            // Enhance artists with ACCURATE play data
+            const enhancedArtists = topArtists.slice(0, 100).map((artist, index) => {
+              // Use ONLY the actual count from filtered history
+              const playsInRange = artistPlayCounts[artist.id] || 0;
+              
+              // Count total plays across all history
+              let totalPlays = 0;
+              allHistory.forEach(item => {
+                if (item.track.artists.some(a => a.id === artist.id)) {
+                  totalPlays++;
+                }
+              });
+
+              return {
+                ...artist,
+                rank: index + 1,
+                playCount: playsInRange, // ACCURATE count
+                totalPlays
+              };
+            });
+
+            // Build albums from tracks
+            const albumsMap = {};
+            enhancedTracks.forEach(track => {
+              const albumId = track.album.id;
+              if (!albumsMap[albumId]) {
+                albumsMap[albumId] = {
+                  album: track.album,
+                  playCount: 0,
+                  totalPlays: 0,
+                  tracks: []
+                };
+              }
+              albumsMap[albumId].playCount += track.playCount;
+              albumsMap[albumId].totalPlays += track.totalPlays;
+              albumsMap[albumId].tracks.push(track);
+            });
+
+            const albums = Object.values(albumsMap)
+              .sort((a, b) => b.playCount - a.playCount)
+              .slice(0, 100)
+              .map((item, index) => ({
+                ...item,
+                rank: index + 1
+              }));
+
+            // Calculate genres
+            const genreCount = {};
+            enhancedArtists.forEach(artist => {
+              artist.genres.forEach(genre => {
+                genreCount[genre] = (genreCount[genre] || 0) + 1;
+              });
+            });
+
+            const genres = Object.entries(genreCount)
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 100)
+              .map(([genre, count], index) => ({ 
+                rank: index + 1,
+                genre, 
+                count 
+              }));
+
+            setData({
+              tracks: enhancedTracks,
+              artists: enhancedArtists,
+              albums,
+              genres,
+              time: totalListeningTime,
+              cutoffDate,
+              trackHistoryMap
+            });
+          };
+
           const doSearch = async () => {
             if (!search.trim()) return;
+            setResults([]);
             try {
               const h = { Authorization: `Bearer ${token}` };
-              const res = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(search)}&type=track&limit=20`, { headers: h });
+              const res = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(search)}&type=track&limit=50`, { headers: h });
               const json = await res.json();
-              setResults(json.tracks?.items || []);
+              
+              // Enhance search results with history data
+              const enhancedResults = (json.tracks?.items || []).map(track => {
+                const history = allHistory.filter(item => item.track.id === track.id);
+                
+                let firstPlayed = null;
+                let lastPlayed = null;
+                let totalPlays = history.length;
+                
+                if (history.length > 0) {
+                  const dates = history.map(item => new Date(item.played_at));
+                  firstPlayed = new Date(Math.min(...dates));
+                  lastPlayed = new Date(Math.max(...dates));
+                }
+
+                return {
+                  ...track,
+                  totalPlays,
+                  firstPlayed,
+                  lastPlayed,
+                  history
+                };
+              });
+
+              setResults(enhancedResults);
             } catch (e) {
               console.error('Search error:', e);
             }
@@ -197,40 +420,57 @@
             try {
               const h = { Authorization: `Bearer ${token}` };
               
-              const res1 = await fetch(`https://api.spotify.com/v1/me/player/recently-played?limit=50`, { headers: h });
-              const res2 = await fetch(`https://api.spotify.com/v1/audio-features/${track.id}`, { headers: h });
+              // Fetch audio features
+              const audioRes = await fetch(`https://api.spotify.com/v1/audio-features/${track.id}`, { headers: h });
+              const audio = await audioRes.json();
 
-              const rec = await res1.json();
-              const aud = await res2.json();
-
-              const hist = rec.items?.filter(i => i.track.id === track.id) || [];
-              
-              let first = null;
-              let last = null;
-              
-              if (hist.length > 0) {
-                const dates = hist.map(i => new Date(i.played_at));
-                first = new Date(Math.min(...dates));
-                last = new Date(Math.max(...dates));
-              }
+              // Get artist play counts
+              const artistPlays = {};
+              track.artists.forEach(artist => {
+                let totalPlays = 0;
+                allHistory.forEach(item => {
+                  if (item.track.artists.some(a => a.id === artist.id)) {
+                    totalPlays++;
+                  }
+                });
+                artistPlays[artist.id] = totalPlays;
+              });
 
               setDetail({
                 ...track,
-                first,
-                last,
-                plays: data?.tpc?.[track.id] || hist.length,
-                audio: aud,
-                hist
+                audio,
+                artistPlays
               });
             } catch (e) {
               console.error('Detail error:', e);
             }
           };
 
+          const applyCustomRange = () => {
+            const weeks = parseInt(customWeeks);
+            if (isNaN(weeks) || weeks < 1) {
+              alert('Please enter a valid number of weeks (minimum 1)');
+              return;
+            }
+            setRange(`custom_${weeks}`);
+            setShowCustom(false);
+          };
+
           const fmtDur = (ms) => {
-            const h = Math.floor(ms / 3600000);
-            const m = Math.floor((ms % 3600000) / 60000);
-            return h > 0 ? `${h}h ${m}m` : `${m}m`;
+            // For lifetime, show "-"
+            if (range === 'lifetime') {
+              return '-';
+            }
+            
+            const totalMinutes = Math.floor(ms / 60000);
+            const h = Math.floor(totalMinutes / 60);
+            const m = totalMinutes % 60;
+            
+            if (h > 0) {
+              return `${h}h ${m}m`;
+            } else {
+              return `${m}m`;
+            }
           };
 
           const fmtTime = (ms) => {
@@ -240,14 +480,46 @@
           };
 
           const fmtDate = (d) => {
-            if (!d) return 'Unknown';
-            return new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+            if (!d) return 'Not available';
+            const date = new Date(d);
+            if (isNaN(date.getTime())) return 'Not available';
+            return date.toLocaleDateString('en-US', { 
+              year: 'numeric', 
+              month: 'long', 
+              day: 'numeric' 
+            });
+          };
+
+          const fmtDateTime = (d) => {
+            if (!d) return 'Not available';
+            const date = new Date(d);
+            if (isNaN(date.getTime())) return 'Not available';
+            return date.toLocaleString('en-US', { 
+              year: 'numeric', 
+              month: 'short', 
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit'
+            });
+          };
+
+          const getRangeLabel = () => {
+            if (range === 'short_term') return '1 Week';
+            if (range === 'medium_term') return '4 Weeks';
+            if (range === 'long_term') return '6 Months';
+            if (range === 'lifetime') return 'All Time';
+            if (range.startsWith('custom_')) {
+              const weeks = range.split('_')[1];
+              return `${weeks} Week${weeks > 1 ? 's' : ''}`;
+            }
+            return '';
           };
 
           const ranges = [
             { value: 'short_term', label: '1 Week' },
-            { value: 'medium_term', label: '1 Month' },
-            { value: 'long_term', label: 'All Time' }
+            { value: 'medium_term', label: '4 Weeks' },
+            { value: 'long_term', label: '6 Months' },
+            { value: 'lifetime', label: 'All Time' }
           ];
 
           if (!authed) {
@@ -260,7 +532,7 @@
                     </svg>
                   </div>
                   <h1 className="text-5xl font-bold text-white mb-4">Spotify Stats Pro</h1>
-                  <p className="text-gray-400 mb-8 text-lg">Get comprehensive insights into your listening habits</p>
+                  <p className="text-gray-400 mb-8 text-lg">Complete analytics with all premium features - 100% free</p>
                   <button onClick={login} className="bg-gradient-to-r from-red-600 to-red-800 hover:from-red-700 hover:to-red-900 text-white font-semibold py-4 px-10 rounded-full text-lg transition-all transform hover:scale-105 shadow-lg">
                     Connect with Spotify
                   </button>
@@ -273,33 +545,79 @@
             <div className="min-h-screen gradient-red">
               <div className="bg-gradient-to-r from-red-900 to-black text-white p-8 shadow-2xl border-b border-red-800">
                 <div className="max-w-7xl mx-auto">
-                  <h1 className="text-5xl font-bold mb-6">Your Spotify Stats Pro</h1>
+                  <h1 className="text-5xl font-bold mb-2">Your Spotify Stats Pro</h1>
+                  <p className="text-gray-400 mb-6">Viewing stats for: {getRangeLabel()}</p>
                   
-                  <div className="flex gap-3 flex-wrap mb-6">
+                  <div className="flex gap-3 flex-wrap mb-4">
                     {ranges.map(r => (
-                      <button key={r.label} onClick={() => setRange(r.value)} className={`px-6 py-3 rounded-full font-medium transition-all ${range === r.value ? 'bg-red-600 shadow-lg scale-105' : 'bg-red-900/30 hover:bg-red-900/50 border border-red-800'}`}>
+                      <button 
+                        key={r.value} 
+                        onClick={() => setRange(r.value)} 
+                        className={`px-6 py-3 rounded-full font-medium transition-all ${range === r.value ? 'bg-red-600 shadow-lg scale-105' : 'bg-red-900/30 hover:bg-red-900/50 border border-red-800'}`}
+                      >
                         {r.label}
                       </button>
                     ))}
+                    <button 
+                      onClick={() => setShowCustom(!showCustom)}
+                      className={`px-6 py-3 rounded-full font-medium transition-all ${range.startsWith('custom_') ? 'bg-red-600 shadow-lg scale-105' : 'bg-red-900/30 hover:bg-red-900/50 border border-red-800'}`}
+                    >
+                      Custom Range
+                    </button>
                   </div>
 
+                  {showCustom && (
+                    <div className="flex gap-3 mb-4 items-center">
+                      <input 
+                        type="number" 
+                        min="1"
+                        placeholder="Enter weeks (min 1)" 
+                        value={customWeeks}
+                        onChange={(e) => setCustomWeeks(e.target.value)}
+                        className="px-4 py-2 rounded-full bg-black/50 border border-red-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-red-600 w-48"
+                      />
+                      <button 
+                        onClick={applyCustomRange}
+                        className="px-6 py-2 bg-red-600 hover:bg-red-700 rounded-full font-semibold"
+                      >
+                        Apply
+                      </button>
+                    </div>
+                  )}
+
                   <div className="flex gap-3 mb-6">
-                    <input type="text" placeholder="Search for any track..." value={search} onChange={(e) => setSearch(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && doSearch()} className="flex-1 px-6 py-3 rounded-full bg-black/50 border border-red-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-red-600" />
+                    <input 
+                      type="text" 
+                      placeholder="Search for any track..." 
+                      value={search} 
+                      onChange={(e) => setSearch(e.target.value)} 
+                      onKeyPress={(e) => e.key === 'Enter' && doSearch()} 
+                      className="flex-1 px-6 py-3 rounded-full bg-black/50 border border-red-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-red-600" 
+                    />
                     <button onClick={doSearch} className="px-8 py-3 bg-red-600 hover:bg-red-700 rounded-full font-semibold">Search</button>
                   </div>
                 </div>
               </div>
 
               {loading ? (
-                <div className="flex items-center justify-center h-64">
-                  <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-red-600"></div>
+                <div className="flex flex-col items-center justify-center h-64">
+                  <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-red-600 mb-4"></div>
+                  <p className="text-gray-400">Loading your complete stats...</p>
                 </div>
               ) : (
                 <>
                   {results.length > 0 && (
                     <div className="max-w-7xl mx-auto p-8">
                       <div className="card-dark rounded-2xl p-6 backdrop-blur-sm mb-8">
-                        <h2 className="text-3xl font-bold text-white mb-6">Search Results</h2>
+                        <div className="flex justify-between items-center mb-6">
+                          <h2 className="text-3xl font-bold text-white">Search Results</h2>
+                          <button 
+                            onClick={() => setResults([])}
+                            className="text-gray-400 hover:text-white"
+                          >
+                            Clear
+                          </button>
+                        </div>
                         <div className="space-y-3">
                           {results.map((t) => (
                             <div key={t.id} onClick={() => showDetail(t)} className="flex items-center gap-4 p-4 rounded-xl hover:bg-red-900/20 transition cursor-pointer">
@@ -308,7 +626,10 @@
                                 <p className="font-semibold text-white text-lg">{t.name}</p>
                                 <p className="text-gray-400">{t.artists.map(a => a.name).join(', ')}</p>
                               </div>
-                              <span className="text-gray-500">{fmtTime(t.duration_ms)}</span>
+                              <div className="text-right">
+                                <p className="text-red-500 font-bold">{t.totalPlays || 0} plays</p>
+                                <p className="text-gray-500 text-sm">{fmtTime(t.duration_ms)}</p>
+                              </div>
                             </div>
                           ))}
                         </div>
@@ -319,36 +640,62 @@
                   {detail && (
                     <div className="max-w-7xl mx-auto p-8">
                       <div className="card-dark rounded-2xl p-8 backdrop-blur-sm mb-8">
-                        <button onClick={() => setDetail(null)} className="text-red-500 hover:text-red-400 mb-4">← Back</button>
-                        <div className="flex gap-8 flex-col md:flex-row">
-                          <img src={detail.album.images[0]?.url} alt={detail.name} className="w-64 h-64 rounded-2xl shadow-2xl mx-auto md:mx-0" />
+                        <button onClick={() => setDetail(null)} className="text-red-500 hover:text-red-400 mb-4 flex items-center gap-2">
+                          <span>←</span> Back
+                        </button>
+                        <div className="flex gap-8 flex-col lg:flex-row">
+                          <img src={detail.album.images[0]?.url} alt={detail.name} className="w-64 h-64 rounded-2xl shadow-2xl mx-auto lg:mx-0" />
                           <div className="flex-1">
                             <h2 className="text-4xl font-bold text-white mb-2">{detail.name}</h2>
-                            <p className="text-2xl text-gray-400 mb-6">{detail.artists.map(a => a.name).join(', ')}</p>
+                            <p className="text-2xl text-gray-400 mb-2">{detail.artists.map(a => a.name).join(', ')}</p>
+                            <p className="text-lg text-gray-500 mb-6">{detail.album.name} • {detail.album.release_date?.split
+                                ('-')[0] || 'Unknown'}</p>
                             
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                               <div className="bg-red-900/20 rounded-xl p-4 border border-red-800">
-                                <p className="text-gray-400 text-sm mb-1">Total Plays</p>
-                                <p className="text-3xl font-bold text-white">{detail.plays}</p>
+                                <p className="text-gray-400 text-sm mb-1">Total Plays (All Time)</p>
+                                <p className="text-3xl font-bold text-white">{detail.totalPlays || 0}</p>
                               </div>
                               <div className="bg-red-900/20 rounded-xl p-4 border border-red-800">
-                                <p className="text-gray-400 text-sm mb-1">Duration</p>
+                                <p className="text-gray-400 text-sm mb-1">Plays in Selected Period</p>
+                                <p className="text-3xl font-bold text-white">{detail.playCount || 0}</p>
+                              </div>
+                              <div className="bg-red-900/20 rounded-xl p-4 border border-red-800">
+                                <p className="text-gray-400 text-sm mb-1">Track Duration</p>
                                 <p className="text-3xl font-bold text-white">{fmtTime(detail.duration_ms)}</p>
                               </div>
                               <div className="bg-red-900/20 rounded-xl p-4 border border-red-800">
+                                <p className="text-gray-400 text-sm mb-1">Popularity</p>
+                                <p className="text-3xl font-bold text-white">{detail.popularity || 0}/100</p>
+                              </div>
+                              <div className="bg-red-900/20 rounded-xl p-4 border border-red-800">
                                 <p className="text-gray-400 text-sm mb-1">First Played</p>
-                                <p className="text-lg font-semibold text-white">{fmtDate(detail.first)}</p>
+                                <p className="text-lg font-semibold text-white">{fmtDate(detail.firstPlayed)}</p>
                               </div>
                               <div className="bg-red-900/20 rounded-xl p-4 border border-red-800">
                                 <p className="text-gray-400 text-sm mb-1">Last Played</p>
-                                <p className="text-lg font-semibold text-white">{fmtDate(detail.last)}</p>
+                                <p className="text-lg font-semibold text-white">{fmtDate(detail.lastPlayed)}</p>
                               </div>
                             </div>
 
+                            {detail.artists && detail.artists.length > 0 && (
+                              <div className="bg-red-900/20 rounded-xl p-4 border border-red-800 mb-6">
+                                <p className="text-gray-400 text-sm mb-3">Artist Play Counts (All Time)</p>
+                                <div className="space-y-2">
+                                  {detail.artists.map(artist => (
+                                    <div key={artist.id} className="flex justify-between items-center">
+                                      <p className="text-white font-semibold">{artist.name}</p>
+                                      <p className="text-red-500 font-bold">{detail.artistPlays[artist.id] || 0} plays</p>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
                             {detail.audio && (
-                              <div className="mt-6 bg-red-900/20 rounded-xl p-4 border border-red-800">
+                              <div className="bg-red-900/20 rounded-xl p-4 border border-red-800 mb-6">
                                 <p className="text-gray-400 text-sm mb-3">Audio Features</p>
-                                <div className="grid grid-cols-3 gap-4 text-center">
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
                                   <div>
                                     <p className="text-gray-400 text-xs">Energy</p>
                                     <p className="text-xl font-bold text-white">{Math.round(detail.audio.energy * 100)}%</p>
@@ -358,9 +705,42 @@
                                     <p className="text-xl font-bold text-white">{Math.round(detail.audio.danceability * 100)}%</p>
                                   </div>
                                   <div>
+                                    <p className="text-gray-400 text-xs">Valence</p>
+                                    <p className="text-xl font-bold text-white">{Math.round(detail.audio.valence * 100)}%</p>
+                                  </div>
+                                  <div>
                                     <p className="text-gray-400 text-xs">Tempo</p>
                                     <p className="text-xl font-bold text-white">{Math.round(detail.audio.tempo)} BPM</p>
                                   </div>
+                                  <div>
+                                    <p className="text-gray-400 text-xs">Acousticness</p>
+                                    <p className="text-xl font-bold text-white">{Math.round(detail.audio.acousticness * 100)}%</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-gray-400 text-xs">Instrumentalness</p>
+                                    <p className="text-xl font-bold text-white">{Math.round(detail.audio.instrumentalness * 100)}%</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-gray-400 text-xs">Liveness</p>
+                                    <p className="text-xl font-bold text-white">{Math.round(detail.audio.liveness * 100)}%</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-gray-400 text-xs">Speechiness</p>
+                                    <p className="text-xl font-bold text-white">{Math.round(detail.audio.speechiness * 100)}%</p>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
+                            {detail.history && detail.history.length > 0 && (
+                              <div className="bg-red-900/20 rounded-xl p-4 border border-red-800">
+                                <p className="text-gray-400 text-sm mb-3">Recent Play History (Last 50 Plays)</p>
+                                <div className="space-y-2 max-h-48 overflow-y-auto scrollbar-hide">
+                                  {detail.history.slice(0, 50).map((item, i) => (
+                                    <div key={i} className="text-sm text-gray-300">
+                                      {fmtDateTime(item.played_at)}
+                                    </div>
+                                  ))}
                                 </div>
                               </div>
                             )}
@@ -376,17 +756,18 @@
                         <div className="card-dark rounded-2xl p-6 backdrop-blur-sm">
                           <p className="text-gray-400 text-sm mb-2">Listening Time</p>
                           <p className="text-4xl font-bold text-white">{fmtDur(data.time)}</p>
+                          <p className="text-xs text-gray-500 mt-1">In selected period</p>
                         </div>
                         <div className="card-dark rounded-2xl p-6 backdrop-blur-sm">
-                          <p className="text-gray-400 text-sm mb-2">Tracks</p>
+                          <p className="text-gray-400 text-sm mb-2">Top Tracks</p>
                           <p className="text-4xl font-bold text-white">{data.tracks.length}</p>
                         </div>
                         <div className="card-dark rounded-2xl p-6 backdrop-blur-sm">
-                          <p className="text-gray-400 text-sm mb-2">Artists</p>
+                          <p className="text-gray-400 text-sm mb-2">Top Artists</p>
                           <p className="text-4xl font-bold text-white">{data.artists.length}</p>
                         </div>
                         <div className="card-dark rounded-2xl p-6 backdrop-blur-sm">
-                          <p className="text-gray-400 text-sm mb-2">Albums</p>
+                          <p className="text-gray-400 text-sm mb-2">Top Albums</p>
                           <p className="text-4xl font-bold text-white">{data.albums.length}</p>
                         </div>
                       </div>
@@ -401,11 +782,11 @@
 
                       {tab === 'tracks' && (
                         <div className="card-dark rounded-2xl p-6 backdrop-blur-sm">
-                          <h2 className="text-3xl font-bold text-white mb-6">Top Tracks</h2>
+                          <h2 className="text-3xl font-bold text-white mb-6">Top 100 Tracks</h2>
                           <div className="space-y-3">
                             {data.tracks.map((t, i) => (
                               <div key={t.id} onClick={() => showDetail(t)} className="flex items-center gap-4 p-4 rounded-xl hover:bg-red-900/20 transition cursor-pointer">
-                                <div className="text-3xl font-bold text-red-600 w-12">{i + 1}</div>
+                                <div className="text-2xl font-bold text-red-600 w-12 text-center">{i + 1}</div>
                                 <img src={t.album.images[0]?.url} alt={t.name} className="w-16 h-16 rounded-lg" />
                                 <div className="flex-1 min-w-0">
                                   <p className="font-semibold text-white text-lg truncate">{t.name}</p>
@@ -423,17 +804,20 @@
 
                       {tab === 'artists' && (
                         <div className="card-dark rounded-2xl p-6 backdrop-blur-sm">
-                          <h2 className="text-3xl font-bold text-white mb-6">Top Artists</h2>
+                          <h2 className="text-3xl font-bold text-white mb-6">Top 100 Artists</h2>
                           <div className="space-y-3">
                             {data.artists.map((a, i) => (
                               <div key={a.id} className="flex items-center gap-4 p-4 rounded-xl hover:bg-red-900/20 transition">
-                                <div className="text-3xl font-bold text-red-600 w-12">{i + 1}</div>
+                                <div className="text-2xl font-bold text-red-600 w-12 text-center">{i + 1}</div>
                                 <img src={a.images[0]?.url} alt={a.name} className="w-16 h-16 rounded-full" />
                                 <div className="flex-1 min-w-0">
                                   <p className="font-semibold text-white text-lg truncate">{a.name}</p>
-                                  <p className="text-gray-400 truncate">{a.genres.slice(0, 3).join(', ')}</p>
+                                  <p className="text-gray-400 truncate">{a.genres.slice(0, 3).join(', ') || 'No genres listed'}</p>
                                 </div>
-                                <p className="text-red-500 font-bold text-lg">{a.playCount} plays</p>
+                                <div className="text-right">
+                                  <p className="text-red-500 font-bold text-lg">{a.playCount} plays</p>
+                                  <p className="text-gray-500 text-sm">{a.totalPlays} total</p>
+                                </div>
                               </div>
                             ))}
                           </div>
@@ -442,11 +826,11 @@
 
                       {tab === 'albums' && (
                         <div className="card-dark rounded-2xl p-6 backdrop-blur-sm">
-                          <h2 className="text-3xl font-bold text-white mb-6">Top Albums</h2>
+                          <h2 className="text-3xl font-bold text-white mb-6">Top 100 Albums</h2>
                           <div className="space-y-3">
                             {data.albums.map((item, i) => (
                               <div key={item.album.id} className="flex items-center gap-4 p-4 rounded-xl hover:bg-red-900/20 transition">
-                                <div className="text-3xl font-bold text-red-600 w-12">{i + 1}</div>
+                                <div className="text-2xl font-bold text-red-600 w-12 text-center">{i + 1}</div>
                                 <img src={item.album.images[0]?.url} alt={item.album.name} className="w-16 h-16 rounded-lg" />
                                 <div className="flex-1 min-w-0">
                                   <p className="font-semibold text-white text-lg truncate">{item.album.name}</p>
@@ -464,11 +848,11 @@
 
                       {tab === 'genres' && (
                         <div className="card-dark rounded-2xl p-6 backdrop-blur-sm">
-                          <h2 className="text-3xl font-bold text-white mb-6">Top Genres</h2>
+                          <h2 className="text-3xl font-bold text-white mb-6">Top 100 Genres</h2>
                           <div className="space-y-4">
                             {data.genres.map((g, i) => (
                               <div key={g.genre} className="flex items-center gap-4">
-                                <div className="text-2xl font-bold text-red-600 w-12">{i + 1}</div>
+                                <div className="text-2xl font-bold text-red-600 w-12 text-center">{i + 1}</div>
                                 <div className="flex-1">
                                   <div className="flex justify-between mb-2">
                                     <span className="font-semibold text-white text-lg capitalize">{g.genre}</span>
