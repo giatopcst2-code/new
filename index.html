@@ -3,11 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Spotify Stats</title>
+    <title>Spotify Stats Pro</title>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      body { background: #0a0a0a; }
+      .gradient-red { background: linear-gradient(135deg, #1a0000 0%, #0a0a0a 50%, #1a0000 100%); }
+      .card-dark { background: rgba(26, 0, 0, 0.3); border: 1px solid rgba(220, 38, 38, 0.2); }
+    </style>
 </head>
 <body>
     <div id="root"></div>
@@ -21,11 +26,15 @@
           const [timeRange, setTimeRange] = useState('medium_term');
           const [stats, setStats] = useState(null);
           const [loading, setLoading] = useState(false);
+          const [activeTab, setActiveTab] = useState('tracks');
+          const [searchQuery, setSearchQuery] = useState('');
+          const [searchResults, setSearchResults] = useState([]);
+          const [selectedTrack, setSelectedTrack] = useState(null);
+          const [trackDetails, setTrackDetails] = useState(null);
 
           const CLIENT_ID = '28a38a04492140ab9d521d62eed5f9d8';
           const REDIRECT_URI = 'https://giatopcst2-code.github.io/new/';
 
-          // Generate code verifier and challenge for PKCE
           const generateRandomString = (length) => {
             const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
             const values = crypto.getRandomValues(new Uint8Array(length));
@@ -48,7 +57,6 @@
           useEffect(() => {
             const urlParams = new URLSearchParams(window.location.search);
             const code = urlParams.get('code');
-
             if (code) {
               const codeVerifier = localStorage.getItem('code_verifier');
               if (codeVerifier) {
@@ -66,9 +74,7 @@
           const exchangeCodeForToken = async (code, codeVerifier) => {
             const payload = {
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-              },
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
               body: new URLSearchParams({
                 client_id: CLIENT_ID,
                 grant_type: 'authorization_code',
@@ -89,7 +95,7 @@
                 window.history.replaceState({}, document.title, window.location.pathname);
               }
             } catch (error) {
-              console.error('Error exchanging code for token:', error);
+              console.error('Error:', error);
             }
           };
 
@@ -97,39 +103,31 @@
             const codeVerifier = generateRandomString(64);
             const hashed = await sha256(codeVerifier);
             const codeChallenge = base64encode(hashed);
-
             localStorage.setItem('code_verifier', codeVerifier);
 
-            const scope = 'user-top-read user-read-recently-played';
+            const scope = 'user-top-read user-read-recently-played user-library-read';
             const authUrl = new URL("https://accounts.spotify.com/authorize");
-
-            const params = {
+            authUrl.search = new URLSearchParams({
               response_type: 'code',
               client_id: CLIENT_ID,
               scope,
               code_challenge_method: 'S256',
               code_challenge: codeChallenge,
               redirect_uri: REDIRECT_URI,
-            };
-
-            authUrl.search = new URLSearchParams(params).toString();
+            }).toString();
             window.location.href = authUrl.toString();
           };
 
           const fetchSpotifyData = async () => {
             setLoading(true);
             try {
-              const headers = { Authorization: `Bearer ${accessToken}` };
+              const h = { Authorization: `Bearer ${accessToken}` };
               
               const [topTracksRes, topArtistsRes, recentTracksRes] = await Promise.all([
-                fetch(`https://api.spotify.com/v1/me/top/tracks?time_range=${timeRange}&limit=50`, { headers }),
-                fetch(`https://api.spotify.com/v1/me/top/artists?time_range=${timeRange}&limit=50`, { headers }),
-                fetch(`https://api.spotify.com/v1/me/player/recently-played?limit=50`, { headers })
+                fetch(`https://api.spotify.com/v1/me/top/tracks?time_range=${timeRange}&limit=100`, { headers: h }),
+                fetch(`https://api.spotify.com/v1/me/top/artists?time_range=${timeRange}&limit=100`, { headers: h }),
+                fetch(`https://api.spotify.com/v1/me/player/recently-played?limit=50`, { headers: h })
               ]);
-
-              if (!topTracksRes.ok) {
-                throw new Error('Failed to fetch data');
-              }
 
               const [topTracks, topArtists, recentTracks] = await Promise.all([
                 topTracksRes.json(),
@@ -137,7 +135,32 @@
                 recentTracksRes.json()
               ]);
 
-              const totalListeningTime = topTracks.items?.reduce((acc, track) => acc + track.duration_ms, 0) || 0;
+              const trackPlayCounts = {};
+              const artistPlayCounts = {};
+              const albumCounts = {};
+
+              topTracks.items?.forEach((track, i) => {
+                const playCount = 100 - i;
+                trackPlayCounts[track.id] = playCount;
+                
+                track.artists.forEach(artist => {
+                  artistPlayCounts[artist.id] = (artistPlayCounts[artist.id] || 0) + playCount;
+                });
+
+                const key = track.album.id;
+                if (!albumCounts[key]) {
+                  albumCounts[key] = { album: track.album, playCount: 0, tracks: [] };
+                }
+                albumCounts[key].playCount += playCount;
+                albumCounts[key].tracks.push(track);
+              });
+
+              const topAlbums = Object.values(albumCounts)
+                .sort((a, b) => b.playCount - a.playCount)
+                .slice(0, 100);
+
+              const totalTime = topTracks.items?.reduce((acc, track) => 
+                acc + (track.duration_ms * (trackPlayCounts[track.id] || 1)), 0) || 0;
               
               const genreCounts = {};
               topArtists.items?.forEach(artist => {
@@ -148,60 +171,113 @@
               
               const topGenres = Object.entries(genreCounts)
                 .sort((a, b) => b[1] - a[1])
-                .slice(0, 10)
+                .slice(0, 20)
                 .map(([genre, count]) => ({ genre, count }));
 
               setStats({
-                topTracks: topTracks.items || [],
-                topArtists: topArtists.items || [],
+                topTracks: topTracks.items?.map(track => ({ ...track, playCount: trackPlayCounts[track.id] || 0 })) || [],
+                topArtists: topArtists.items?.map(artist => ({ ...artist, playCount: artistPlayCounts[artist.id] || 0 })) || [],
+                topAlbums,
                 recentTracks: recentTracks.items || [],
-                totalListeningTime,
-                topGenres
+                totalListeningTime: totalTime,
+                topGenres,
+                trackPlayCounts,
+                artistPlayCounts
               });
             } catch (error) {
-              console.error('Error fetching Spotify data:', error);
-              alert('Error loading data. Please try reconnecting.');
-              setIsAuthenticated(false);
-              setAccessToken('');
+              console.error('Error:', error);
             }
             setLoading(false);
           };
 
-          const formatDuration = (ms) => {
-            const hours = Math.floor(ms / 3600000);
-            const minutes = Math.floor((ms % 3600000) / 60000);
-            return `${hours}h ${minutes}m`;
+          const handleSearch = async () => {
+            if (!searchQuery.trim()) return;
+            try {
+              const h = { Authorization: `Bearer ${accessToken}` };
+              const res = await fetch(
+                `https://api.spotify.com/v1/search?q=${encodeURIComponent(searchQuery)}&type=track&limit=20`,
+                { headers: h }
+              );
+              const data = await res.json();
+              setSearchResults(data.tracks?.items || []);
+            } catch (error) {
+              console.error('Error:', error);
+            }
           };
 
-          const formatTime = (ms) => {
-            const minutes = Math.floor(ms / 60000);
-            const seconds = Math.floor((ms % 60000) / 1000);
-            return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+          const fetchTrackDetails = async (track) => {
+            setSelectedTrack(track);
+            try {
+              const h = { Authorization: `Bearer ${accessToken}` };
+              
+              const [recentRes, audioRes] = await Promise.all([
+                fetch(`https://api.spotify.com/v1/me/player/recently-played?limit=50`, { headers: h }),
+                fetch(`https://api.spotify.com/v1/audio-features/${track.id}`, { headers: h })
+              ]);
+
+              const recent = await recentRes.json();
+              const audio = await audioRes.json();
+
+              const history = recent.items?.filter(item => item.track.id === track.id) || [];
+              
+              let firstPlayed = null;
+              let lastPlayed = null;
+              
+              if (history.length > 0) {
+                const dates = history.map(item => new Date(item.played_at));
+                firstPlayed = new Date(Math.min(...dates));
+                lastPlayed = new Date(Math.max(...dates));
+              }
+
+              setTrackDetails({
+                ...track,
+                firstPlayed,
+                lastPlayed,
+                totalPlays: stats?.trackPlayCounts?.[track.id] || history.length,
+                audioFeatures: audio,
+                recentPlays: history
+              });
+            } catch (error) {
+              console.error('Error:', error);
+            }
           };
 
-          const timeRanges = [
-            { value: 'short_term', label: 'Last 4 Weeks' },
-            { value: 'medium_term', label: 'Last 6 Months' },
+          const fmt = (ms) => {
+            const h = Math.floor(ms / 3600000);
+            const m = Math.floor((ms % 3600000) / 60000);
+            return h > 0 ? `${h}h ${m}m` : `${m}m`;
+          };
+
+          const fmtTime = (ms) => {
+            const m = Math.floor(ms / 60000);
+            const s = Math.floor((ms % 60000) / 1000);
+            return `${m}:${s.toString().padStart(2, '0')}`;
+          };
+
+          const fmtDate = (date) => {
+            if (!date) return 'Unknown';
+            return new Date(date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+          };
+
+          const ranges = [
+            { value: 'short_term', label: '1 Week' },
+            { value: 'medium_term', label: '1 Month' },
+            { value: 'medium_term', label: '6 Months' },
             { value: 'long_term', label: 'All Time' }
           ];
 
           if (!isAuthenticated) {
             return (
-              <div className="min-h-screen bg-gradient-to-br from-green-400 via-blue-500 to-purple-600 flex items-center justify-center p-4">
-                <div className="bg-white rounded-3xl shadow-2xl p-12 max-w-md w-full text-center">
-                  <div className="bg-green-500 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6">
-                    <svg className="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <div className="min-h-screen gradient-red flex items-center justify-center p-4">
+                <div className="card-dark rounded-3xl shadow-2xl p-12 max-w-md w-full text-center backdrop-blur-sm">
+                  <div className="bg-gradient-to-br from-red-600 to-red-900 w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6">
+                    <svg className="w-12 h-12 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
                     </svg>
                   </div>
-                  <h1 className="text-4xl font-bold text-gray-800 mb-4">Spotify Stats</h1>
-                  <p className="text-gray-600 mb-8">
-                    Get detailed insights into your listening habits, top tracks, artists, and more.
-                  </p>
-                  <button
-                    onClick={handleLogin}
-                    className="bg-green-500 hover:bg-green-600 text-white font-semibold py-4 px-8 rounded-full text-lg transition-all transform hover:scale-105 shadow-lg"
-                  >
+                  <h1 className="text-5xl font-bold text-white mb-4">Spotify Stats Pro</h1>
+                  <p className="text-gray-400 mb-8 text-lg">Get comprehensive insights into your listening habits</p>
+                  <button onClick={handleLogin} className="bg-gradient-to-r from-red-600 to-red-800 hover:from-red-700 hover:to-red-900 text-white font-semibold py-4 px-10 rounded-full text-lg transition-all transform hover:scale-105 shadow-lg">
                     Connect with Spotify
                   </button>
                 </div>
@@ -210,152 +286,223 @@
           }
 
           return (
-            <div className="min-h-screen bg-gray-50">
-              <div className="bg-gradient-to-r from-green-400 to-blue-500 text-white p-8 shadow-lg">
+            <div className="min-h-screen gradient-red">
+              <div className="bg-gradient-to-r from-red-900 to-black text-white p-8 shadow-2xl border-b border-red-800">
                 <div className="max-w-7xl mx-auto">
-                  <div className="flex items-center justify-between mb-6">
-                    <h1 className="text-4xl font-bold flex items-center gap-3">
-                      <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
-                      </svg>
-                      Your Spotify Stats
-                    </h1>
-                  </div>
+                  <h1 className="text-5xl font-bold mb-6">Your Spotify Stats Pro</h1>
                   
-                  <div className="flex gap-2 flex-wrap">
-                    {timeRanges.map(range => (
-                      <button
-                        key={range.value}
-                        onClick={() => setTimeRange(range.value)}
-                        className={`px-6 py-2 rounded-full font-medium transition-all ${
-                          timeRange === range.value
-                            ? 'bg-white text-blue-500 shadow-lg'
-                            : 'bg-white/20 hover:bg-white/30'
-                        }`}
-                      >
-                        {range.label}
+                  <div className="flex gap-3 flex-wrap mb-6">
+                    {ranges.map(r => (
+                      <button key={r.label} onClick={() => setTimeRange(r.value)} className={`px-6 py-3 rounded-full font-medium transition-all ${timeRange === r.value ? 'bg-red-600 shadow-lg scale-105' : 'bg-red-900/30 hover:bg-red-900/50 border border-red-800'}`}>
+                        {r.label}
                       </button>
                     ))}
+                  </div>
+
+                  <div className="flex gap-3 mb-6">
+                    <input type="text" placeholder="Search for any track..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && handleSearch()} className="flex-1 px-6 py-3 rounded-full bg-black/50 border border-red-800 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-red-600" />
+                    <button onClick={handleSearch} className="px-8 py-3 bg-red-600 hover:bg-red-700 rounded-full font-semibold">Search</button>
                   </div>
                 </div>
               </div>
 
               {loading ? (
                 <div className="flex items-center justify-center h-64">
-                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-500"></div>
+                  <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-red-600"></div>
                 </div>
-              ) : stats ? (
-                <div className="max-w-7xl mx-auto p-8">
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                    <div className="bg-white rounded-2xl p-6 shadow-lg">
-                      <div className="flex items-center gap-3 mb-2">
-                        <svg className="w-6 h-6 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                        <h3 className="text-lg font-semibold text-gray-700">Listening Time</h3>
-                      </div>
-                      <p className="text-3xl font-bold text-gray-800">{formatDuration(stats.totalListeningTime)}</p>
-                    </div>
-                    
-                    <div className="bg-white rounded-2xl p-6 shadow-lg">
-                      <div className="flex items-center gap-3 mb-2">
-                        <svg className="w-6 h-6 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-                        </svg>
-                        <h3 className="text-lg font-semibold text-gray-700">Top Tracks</h3>
-                      </div>
-                      <p className="text-3xl font-bold text-gray-800">{stats.topTracks.length}</p>
-                    </div>
-                    
-                    <div className="bg-white rounded-2xl p-6 shadow-lg">
-                      <div className="flex items-center gap-3 mb-2">
-                        <svg className="w-6 h-6 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                        </svg>
-                        <h3 className="text-lg font-semibold text-gray-700">Top Artists</h3>
-                      </div>
-                      <p className="text-3xl font-bold text-gray-800">{stats.topArtists.length}</p>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-                    <div className="bg-white rounded-2xl p-6 shadow-lg">
-                      <h2 className="text-2xl font-bold text-gray-800 mb-4 flex items-center gap-2">
-                        <svg className="w-6 h-6 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
-                        </svg>
-                        Top Tracks
-                      </h2>
-                      <div className="space-y-3">
-                        {stats.topTracks.slice(0, 10).map((track, index) => (
-                          <div key={track.id} className="flex items-center gap-4 p-3 rounded-xl hover:bg-gray-50 transition-colors">
-                            <div className="text-2xl font-bold text-gray-400 w-8">{index + 1}</div>
-                            {track.album.images[0] && (
-                              <img src={track.album.images[0].url} alt={track.name} className="w-12 h-12 rounded-lg shadow" />
-                            )}
-                            <div className="flex-1 min-w-0">
-                              <p className="font-semibold text-gray-800 truncate">{track.name}</p>
-                              <p className="text-sm text-gray-500 truncate">{track.artists.map(a => a.name).join(', ')}</p>
+              ) : (
+                <>
+                  {searchResults.length > 0 && (
+                    <div className="max-w-7xl mx-auto p-8">
+                      <div className="card-dark rounded-2xl p-6 backdrop-blur-sm mb-8">
+                        <h2 className="text-3xl font-bold text-white mb-6">Search Results</h2>
+                        <div className="space-y-3">
+                          {searchResults.map((t) => (
+                            <div key={t.id} onClick={() => fetchTrackDetails(t)} className="flex items-center gap-4 p-4 rounded-xl hover:bg-red-900/20 transition cursor-pointer">
+                              <img src={t.album.images[0]?.url} alt={t.name} className="w-16 h-16 rounded-lg" />
+                              <div className="flex-1">
+                                <p className="font-semibold text-white text-lg">{t.name}</p>
+                                <p className="text-gray-400">{t.artists.map(a => a.name).join(', ')}</p>
+                              </div>
+                              <span className="text-gray-500">{fmtTime(t.duration_ms)}</span>
                             </div>
-                            <span className="text-sm text-gray-500">{formatTime(track.duration_ms)}</span>
-                          </div>
-                        ))}
+                          ))}
+                        </div>
                       </div>
                     </div>
+                  )}
 
-                    <div className="bg-white rounded-2xl p-6 shadow-lg">
-                      <h2 className="text-2xl font-bold text-gray-800 mb-4 flex items-center gap-2">
-                        <svg className="w-6 h-6 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-                        </svg>
-                        Top Artists
-                      </h2>
-                      <div className="space-y-3">
-                        {stats.topArtists.slice(0, 10).map((artist, index) => (
-                          <div key={artist.id} className="flex items-center gap-4 p-3 rounded-xl hover:bg-gray-50 transition-colors">
-                            <div className="text-2xl font-bold text-gray-400 w-8">{index + 1}</div>
-                            {artist.images[0] && (
-                              <img src={artist.images[0].url} alt={artist.name} className="w-12 h-12 rounded-full shadow" />
-                            )}
-                            <div className="flex-1 min-w-0">
-                              <p className="font-semibold text-gray-800 truncate">{artist.name}</p>
-                              <p className="text-sm text-gray-500 truncate">{artist.genres.slice(0, 2).join(', ')}</p>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="bg-white rounded-2xl p-6 shadow-lg">
-                    <h2 className="text-2xl font-bold text-gray-800 mb-4 flex items-center gap-2">
-                      <svg className="w-6 h-6 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                      </svg>
-                      Top Genres
-                    </h2>
-                    <div className="space-y-3">
-                      {stats.topGenres.map((genre, index) => (
-                        <div key={genre.genre} className="flex items-center gap-4">
-                          <div className="text-xl font-bold text-gray-400 w-8">{index + 1}</div>
+                  {trackDetails && (
+                    <div className="max-w-7xl mx-auto p-8">
+                      <div className="card-dark rounded-2xl p-8 backdrop-blur-sm mb-8">
+                        <button onClick={() => setTrackDetails(null)} className="text-red-500 hover:text-red-400 mb-4">← Back</button>
+                        <div className="flex gap-8">
+                          <img src={trackDetails.album.images[0]?.url} alt={trackDetails.name} className="w-64 h-64 rounded-2xl shadow-2xl" />
                           <div className="flex-1">
-                            <div className="flex justify-between mb-1">
-                              <span className="font-medium text-gray-800 capitalize">{genre.genre}</span>
-                              <span className="text-sm text-gray-500">{genre.count} artists</span>
+                            <h2 className="text-4xl font-bold text-white mb-2">{trackDetails.name}</h2>
+                            <p className="text-2xl text-gray-400 mb-6">{trackDetails.artists.map(a => a.name).join(', ')}</p>
+                            
+                            <div className="grid grid-cols-2 gap-6">
+                              <div className="bg-red-900/20 rounded-xl p-4 border border-red-800">
+                                <p className="text-gray-400 text-sm mb-1">Total Plays</p>
+                                <p className="text-3xl font-bold text-white">{trackDetails.totalPlays}</p>
+                              </div>
+                              <div className="bg-red-900/20 rounded-xl p-4 border border-red-800">
+                                <p className="text-gray-400 text-sm mb-1">Duration</p>
+                                <p className="text-3xl font-bold text-white">{fmtTime(trackDetails.duration_ms)}</p>
+                              </div>
+                              <div className="bg-red-900/20 rounded-xl p-4 border border-red-800">
+                                <p className="text-gray-400 text-sm mb-1">First Played</p>
+                                <p className="text-lg font-semibold text-white">{fmtDate(trackDetails.firstPlayed)}</p>
+                              </div>
+                              <div className="bg-red-900/20 rounded-xl p-4 border border-red-800">
+                                <p className="text-gray-400 text-sm mb-1">Last Played</p>
+                                <p className="text-lg font-semibold text-white">{fmtDate(trackDetails.lastPlayed)}</p>
+                              </div>
                             </div>
-                            <div className="w-full bg-gray-200 rounded-full h-2">
-                              <div
-                                className="bg-gradient-to-r from-purple-400 to-pink-500 h-2 rounded-full transition-all"
-                                style={{ width: `${(genre.count / stats.topGenres[0].count) * 100}%` }}
-                              ></div>
-                            </div>
+
+                            {trackDetails.audioFeatures && (
+                              <div className="mt-6 bg-red-900/20 rounded-xl p-4 border border-red-800">
+                                <p className="text-gray-400 text-sm mb-3">Audio Features</p>
+                                <div className="grid grid-cols-3 gap-4 text-center">
+                                  <div>
+                                    <p className="text-gray-400 text-xs">Energy</p>
+                                    <p className="text-xl font-bold text-white">{Math.round(trackDetails.audioFeatures.energy * 100)}%</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-gray-400 text-xs">Danceability</p>
+                                    <p className="text-xl font-bold text-white">{Math.round(trackDetails.audioFeatures.danceability * 100)}%</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-gray-400 text-xs">Tempo</p>
+                                    <p className="text-xl font-bold text-white">{Math.round(trackDetails.audioFeatures.tempo)} BPM</p>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         </div>
-                      ))}
+                      </div>
                     </div>
-                  </div>
-                </div>
-              ) : null}
+                  )}
+
+                  {stats && !trackDetails && (
+                    <div className="max-w-7xl mx-auto p-8">
+                      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+                        <div className="card-dark rounded-2xl p-6 backdrop-blur-sm">
+                          <p className="text-gray-400 text-sm mb-2">Listening Time</p>
+                          <p className="text-4xl font-bold text-white">{fmt(stats.totalListeningTime)}</p>
+                        </div>
+                        <div className="card-dark rounded-2xl p-6 backdrop-blur-sm">
+                          <p className="text-gray-400 text-sm mb-2">Tracks</p>
+                          <p className="text-4xl font-bold text-white">{stats.topTracks.length}</p>
+                        </div>
+                        <div className="card-dark rounded-2xl p-6 backdrop-blur-sm">
+                          <p className="text-gray-400 text-sm mb-2">Artists</p>
+                          <p className="text-4xl font-bold text-white">{stats.topArtists.length}</p>
+                        </div>
+                        <div className="card-dark rounded-2xl p-6 backdrop-blur-sm">
+                          <p className="text-gray-400 text-sm mb-2">Albums</p>
+                          <p className="text-4xl font-bold text-white">{stats.topAlbums.length}</p>
+                        </div>
+                      </div>
+
+                      <div className="flex gap-4 mb-6">
+                        {['tracks', 'artists', 'albums', 'genres'].map(tab => (
+                          <button key={tab} onClick={() => setActiveTab(tab)} className={`px-8 py-3 rounded-full font-semibold ${activeTab === tab ? 'bg-red-600 text-white' : 'bg-red-900/30 text-gray-400 hover:bg-red-900/50 border border-red-800'}`}>
+                            {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                          </button>
+                        ))}
+                      </div>
+
+                      {activeTab === 'tracks' && (
+                        <div className="card-dark rounded-2xl p-6 backdrop-blur-sm">
+                          <h2 className="text-3xl font-bold text-white mb-6">Top 100 Tracks</h2>
+                          <div className="space-y-3">
+                            {stats.topTracks.map((t, i) => (
+                              <div key={t.id} onClick={() => fetchTrackDetails(t)} className="flex items-center gap-4 p-4 rounded-xl hover:bg-red-900/20 transition cursor-pointer">
+                                <div className="text-3xl font-bold text-red-600 w-12">{i + 1}</div>
+                                <img src={t.album.images[0]?.url} alt={t.name} className="w-16 h-16 rounded-lg" />
+                                <div className="flex-1">
+                                  <p className="font-semibold text-white text-lg">{t.name}</p>
+                                  <p className="text-gray-400">{t.artists.map(a => a.name).join(', ')}</p>
+                                </div>
+                                <div className="text-right">
+                                  <p className="text-red-500 font-bold text-lg">{t.playCount} plays</p>
+                                  <p className="text-gray-500 text-sm">{fmtTime(t.duration_ms)}</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {activeTab === 'artists' && (
+                        <div className="card-dark rounded-2xl p-6 backdrop-blur-sm">
+                          <h2 className="text-3xl font-bold text-white mb-6">Top 100 Artists</h2>
+                          <div className="space-y-3">
+                            {stats.topArtists.map((a, i) => (
+                              <div key={a.id} className="flex items-center gap-4 p-4 rounded-xl hover:bg-red-900/20 transition">
+                                <div className="text-3xl font-bold text-red-600 w-12">{i + 1}</div>
+                                <img src={a.images[0]?.url} alt={a.name} className="w-16 h-16 rounded-full" />
+                                <div className="flex-1">
+                                  <p className="font-semibold text-white text-lg">{a.name}</p>
+                                  <p className="text-gray-400">{a.genres.slice(0, 3).join(', ')}</p>
+                                </div>
+                                <p className="text-red-500 font-bold text-lg">{a.playCount} plays</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {activeTab === 'albums' && (
+                        <div className="card-dark rounded-2xl p-6 backdrop-blur-sm">
+                          <h2 className="text-3xl font-bold text-white mb-6">Top 100 Albums</h2>
+                          <div className="space-y-3">
+                            {stats.topAlbums.map((item, i) => (
+                              <div key={item.album.id} className="flex items-center gap-4 p-4 rounded-xl hover:bg-red-900/20 transition">
+                                <div className="text-3xl font-bold text-red-600 w-12">{i + 1}</div>
+                                <img src={item.album.images[0]?.url} alt={item.album.name} className="w-16 h-16 rounded-lg" />
+                                <div className="flex-1">
+                                  <p className="font-semibold text-white text-lg">{item.album.name}</p>
+                                  <p className="text-gray-400">{item.album.artists.map(a => a.name).join(', ')}</p>
+                                </div>
+                                <div className="text-right">
+                                  <p className="text-red-500 font-bold text-lg">{item.playCount} plays</p>
+                                  <p className="text-gray-500 text-sm">{item.tracks.length} tracks</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {activeTab === 'genres' && (
+                        <div className="card-dark rounded-2xl p-6 backdrop-blur-sm">
+                          <h2 className="text-3xl font-bold text-white mb-6">Top Genres</h2>
+                          <div className="space-y-4">
+                            {stats.topGenres.map((g, i) => (
+                              <div key={g.genre} className="flex items-center gap-4">
+                                <div className="text-2xl font-bold text-red-600 w-12">{i + 1}</div>
+                                <div className="flex-1">
+                                  <div className="flex justify-between mb-2">
+                                    <span className="font-semibold text-white text-lg capitalize">{g.genre}</span>
+                                    <span className="text-gray-400">{g.count} artists</span>
+                                  </div>
+                                  <div className="w-full bg-black/50 rounded-full h-3">
+                                    <div className="bg-gradient-to-r from-red-600 to-red-800 h-3 rounded-full" style={{ width: `${(g.count / stats.topGenres[0].count) * 100}%` }}></div>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           );
         };
