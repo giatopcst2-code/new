@@ -66,10 +66,10 @@
           }, []);
 
           useEffect(() => {
-            if (isAuthenticated && accessToken) {
+            if (isAuthenticated && accessToken && !loading) {
               fetchSpotifyData();
             }
-          }, [isAuthenticated, accessToken, timeRange]);
+          }, [timeRange]);
 
           const exchangeCodeForToken = async (code, codeVerifier) => {
             const payload = {
