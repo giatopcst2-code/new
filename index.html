@@ -131,8 +131,10 @@
 
               if (!topTracksRes.ok || !topArtistsRes.ok) {
                 console.error('Auth error - token expired');
+                localStorage.clear();
                 setIsAuthenticated(false);
                 setAccessToken('');
+                setLoading(false);
                 alert('Session expired. Please reconnect with Spotify.');
                 return;
               }
